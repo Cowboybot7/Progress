@@ -217,6 +217,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== Main Setup =====
 def main():
+    # Create the Application
     app = Application.builder().token(BOT_TOKEN).build()
     
     # Conversation handler for update flow
@@ -245,7 +246,13 @@ def main():
     app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
     app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
     
-    app.run_polling()
+    # Run the bot with webhook support for Render
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        url_path=BOT_TOKEN,
+        webhook_url=os.environ.get("WEBHOOK_URL") + BOT_TOKEN
+    )
 
 if __name__ == "__main__":
     main()
