@@ -183,17 +183,17 @@ async def input_planned(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"- New Planned: {value:.1f}%",
             parse_mode="HTML"
         )
-        return ConversationHandler.END
+        return .END
     except ValueError:
         await update.message.reply_text("❌ Invalid value! Must be number between 0 and 100\nTry again:")
         return INPUT_PLANNED
     except Exception as e:
         await update.message.reply_text(f"❌ Update failed: {str(e)}")
-        return ConversationHandler.END
+        return .END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚠️ Update canceled.")
-    return ConversationHandler.END
+    return .END
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -233,6 +233,7 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True
+        per_message=True
     )
     
     # Regular commands
