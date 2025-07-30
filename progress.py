@@ -15,8 +15,8 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 
 # ===== Configuration =====
-BOT_TOKEN = ""
-SPREADSHEET_ID = ""
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 SHEET_NAME = "Project Summary"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
