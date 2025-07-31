@@ -252,10 +252,14 @@ telegram_app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
 # Webhook routes
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
-    json_data = request.get_json()
-    update = Update.de_json(json_data, telegram_app.bot)
-    telegram_app.update_queue.put(update)
+    # Process update in a separate thread
+    threading.Thread(target=process_update, args=(request.json,)).start()
     return Response(status=200)
+
+def process_update(update_data):
+    """Process update in a synchronous context"""
+    update = Update.de_json(update_data, telegram_app.bot)
+    telegram_app.update_queue.put_nowait(update)
 
 @app.route('/wakeup', methods=['GET'])
 def wakeup():
@@ -307,8 +311,10 @@ bot_thread.start()
 # Shutdown handler
 def shutdown_handler(signum, frame):
     print("🛑 Shutting down bot...")
-    asyncio.run(telegram_app.stop())
-    asyncio.run(telegram_app.shutdown())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(telegram_app.stop())
+    loop.run_until_complete(telegram_app.shutdown())
     print("Bot shutdown complete")
     exit(0)
 
