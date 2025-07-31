@@ -3,6 +3,8 @@ import json
 import os
 import re
 import signal
+import threading
+import asyncio
 from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -78,7 +80,7 @@ async def list_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 update_date = 'N/A'
             
-            # FIXED: Use emoji coloring instead of HTML styling
+            # Use emoji coloring instead of HTML styling
             delay_ahead = project.get('Delay/Ahead', 'N/A')
             try:
                 # Extract numeric value from string (e.g., "-15 days" -> -15)
@@ -249,10 +251,10 @@ telegram_app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
 
 # Webhook routes
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
-async def telegram_webhook():
-    json_data = await request.get_json()
+def telegram_webhook():
+    json_data = request.get_json()
     update = Update.de_json(json_data, telegram_app.bot)
-    await telegram_app.update_queue.put(update)
+    telegram_app.update_queue.put(update)
     return Response(status=200)
 
 @app.route('/wakeup', methods=['GET'])
@@ -264,8 +266,11 @@ def wakeup():
 def health_check():
     return '✅ Bot is healthy', 200
 
-# Start handler
-def start_bot():
+# Start the Telegram bot in a background thread
+def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     port = int(os.environ.get("PORT", 5000))
     webhook_base = os.environ.get("WEBHOOK_URL")
     
@@ -282,21 +287,28 @@ def start_bot():
     print(f"Starting bot with webhook URL: {webhook_url}")
     
     # Initialize and start the bot
-    telegram_app.initialize()
-    telegram_app.start()
+    loop.run_until_complete(telegram_app.initialize())
+    loop.run_until_complete(telegram_app.start())
     
     # Set webhook
-    success = telegram_app.bot.set_webhook(webhook_url)
+    success = loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
     if success:
         print("✅ Webhook set successfully")
     else:
         print("⚠️ Failed to set webhook!")
+    
+    # Run until stopped
+    loop.run_forever()
+
+# Start the bot thread
+bot_thread = threading.Thread(target=run_bot, daemon=True)
+bot_thread.start()
 
 # Shutdown handler
 def shutdown_handler(signum, frame):
     print("🛑 Shutting down bot...")
-    telegram_app.stop()
-    telegram_app.shutdown()
+    asyncio.run(telegram_app.stop())
+    asyncio.run(telegram_app.shutdown())
     print("Bot shutdown complete")
     exit(0)
 
@@ -305,9 +317,6 @@ if __name__ == "__main__":
     # Register signal handlers
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
-    
-    # Start the bot
-    start_bot()
     
     # Start Flask app
     port = int(os.environ.get("PORT", 5000))
