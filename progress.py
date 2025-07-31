@@ -1,6 +1,7 @@
 import gspread
 import json
 import os
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -220,7 +221,7 @@ def main():
     # Create the Application
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Conversation handler for update flow
+    # Conversation handler for update flow (FIXED: removed per_message=True)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("update", update_start),
@@ -232,8 +233,7 @@ def main():
             INPUT_PLANNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_planned)]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True,
-        per_message=True
+        allow_reentry=True
     )
     
     # Regular commands
@@ -247,12 +247,27 @@ def main():
     app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
     app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
     
-    # Run the bot with webhook support for Render
+    # Run the bot with webhook support for Render (FIXED: webhook URL construction)
+    port = int(os.environ.get("PORT", 5000))
+    webhook_base = os.environ.get("WEBHOOK_URL")
+    if not webhook_base:
+        raise RuntimeError("WEBHOOK_URL environment variable not set")
+    
+    # Clean URL and construct proper path
+    webhook_base = webhook_base.rstrip('/')
+    webhook_url = f"{webhook_base}/{BOT_TOKEN}"
+    
+    # Validate URL format
+    if not re.match(r'^https?://[^\s/$.?#].[^\s]*$', webhook_url):
+        raise ValueError(f"Invalid webhook URL: {webhook_url}")
+    
+    print(f"Starting bot with webhook URL: {webhook_url}")
+    
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
+        port=port,
         url_path=BOT_TOKEN,
-        webhook_url=os.environ.get("WEBHOOK_URL") + BOT_TOKEN
+        webhook_url=webhook_url
     )
 
 if __name__ == "__main__":
