@@ -2,6 +2,8 @@ import gspread
 import json
 import os
 import re
+import signal
+from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -216,44 +218,60 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text)
 
-# ===== Main Setup =====
-def main():
-    # Create the Application
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Conversation handler for update flow (FIXED: removed per_message=True)
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("update", update_start),
-            CallbackQueryHandler(update_start, pattern="cmd_update")
-        ],
-        states={
-            SELECT_PROJECT: [CallbackQueryHandler(select_project)],
-            INPUT_ACTUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_actual)],
-            INPUT_PLANNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_planned)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
-    
-    # Regular commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("list", list_projects))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(conv_handler)
-    
-    # Callback query handlers for inline keyboard
-    app.add_handler(CallbackQueryHandler(start, pattern="cmd_start"))
-    app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
-    app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
-    
-    # Run the bot with webhook support for Render (FIXED: webhook URL construction)
+# ===== Flask Setup =====
+app = Flask(__name__)
+
+# Create Telegram Application
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+# Add handlers to Telegram application
+conv_handler = ConversationHandler(
+    entry_points=[
+        CommandHandler("update", update_start),
+        CallbackQueryHandler(update_start, pattern="cmd_update")
+    ],
+    states={
+        SELECT_PROJECT: [CallbackQueryHandler(select_project)],
+        INPUT_ACTUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_actual)],
+        INPUT_PLANNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_planned)]
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    allow_reentry=True
+)
+
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("list", list_projects))
+telegram_app.add_handler(CommandHandler("help", help_command))
+telegram_app.add_handler(conv_handler)
+telegram_app.add_handler(CallbackQueryHandler(start, pattern="cmd_start"))
+telegram_app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
+telegram_app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
+
+# Webhook routes
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+async def telegram_webhook():
+    json_data = await request.get_json()
+    update = Update.de_json(json_data, telegram_app.bot)
+    await telegram_app.update_queue.put(update)
+    return Response(status=200)
+
+@app.route('/wakeup', methods=['GET'])
+def wakeup():
+    return '🚀 Bot is awake and running!', 200
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    return '✅ Bot is healthy', 200
+
+# Start handler
+def start_bot():
     port = int(os.environ.get("PORT", 5000))
     webhook_base = os.environ.get("WEBHOOK_URL")
+    
     if not webhook_base:
         raise RuntimeError("WEBHOOK_URL environment variable not set")
     
-    # Clean URL and construct proper path
     webhook_base = webhook_base.rstrip('/')
     webhook_url = f"{webhook_base}/{BOT_TOKEN}"
     
@@ -263,12 +281,34 @@ def main():
     
     print(f"Starting bot with webhook URL: {webhook_url}")
     
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=BOT_TOKEN,
-        webhook_url=webhook_url
-    )
+    # Initialize and start the bot
+    telegram_app.initialize()
+    telegram_app.start()
+    
+    # Set webhook
+    success = telegram_app.bot.set_webhook(webhook_url)
+    if success:
+        print("✅ Webhook set successfully")
+    else:
+        print("⚠️ Failed to set webhook!")
 
+# Shutdown handler
+def shutdown_handler(signum, frame):
+    print("🛑 Shutting down bot...")
+    telegram_app.stop()
+    telegram_app.shutdown()
+    print("Bot shutdown complete")
+    exit(0)
+
+# Main entry point
 if __name__ == "__main__":
-    main()
+    # Register signal handlers
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    
+    # Start the bot
+    start_bot()
+    
+    # Start Flask app
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
