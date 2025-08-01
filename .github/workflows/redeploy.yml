@@ -13,14 +13,14 @@ jobs:
       - name: Check service health
         id: health_check
         run: |
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://your-render-app.onrender.com/health)
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://progress-ytar.onrender.com/wakeup)
           if [ "$RESPONSE" != "200" ]; then
             echo "status=failure" >> $GITHUB_OUTPUT
           else
             echo "status=success" >> $GITHUB_OUTPUT
           fi
         env:
-          URL: https://your-render-app.onrender.com/health
+          URL: https://progress-ytar.onrender.com/wakeup
 
       - name: Trigger redeploy on failure
         if: steps.health_check.outputs.status == 'failure'
@@ -43,5 +43,5 @@ jobs:
       - name: Redeploy to Render
         uses: render-actions/deploy@v1
         with:
-          service-id: your-render-service-id
+          service-id: srv-d24ufore5dus73f2t7gg
           api-key: ${{ secrets.RENDER_API_KEY }}
