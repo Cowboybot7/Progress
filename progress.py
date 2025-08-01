@@ -28,6 +28,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 CREDS_JSON = json.loads(os.environ['GOOGLE_CREDS_JSON'])
+PORT = int(os.environ.get("PORT", 10000))  # Get port from Render environment
 
 # Conversation states
 SELECT_PROJECT, INPUT_ACTUAL, INPUT_PLANNED = range(3)
@@ -258,6 +259,7 @@ def telegram_webhook():
 
 def process_update(update_data):
     """Process update in a synchronous context"""
+    print(f"Processing update: {update_data.get('update_id')}")
     update = Update.de_json(update_data, telegram_app.bot)
     telegram_app.update_queue.put_nowait(update)
 
@@ -275,7 +277,6 @@ def run_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    port = int(os.environ.get("PORT", 5000))
     webhook_base = os.environ.get("WEBHOOK_URL")
     
     if not webhook_base:
@@ -289,6 +290,7 @@ def run_bot():
         raise ValueError(f"Invalid webhook URL: {webhook_url}")
     
     print(f"Starting bot with webhook URL: {webhook_url}")
+    print(f"Using port: {PORT}")
     
     # Initialize and start the bot
     loop.run_until_complete(telegram_app.initialize())
@@ -324,6 +326,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
     
-    # Start Flask app
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    # Start Flask app on the correct port
+    print(f"Starting Flask app on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
