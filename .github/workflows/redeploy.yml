@@ -1,0 +1,47 @@
+name: Monitor and Redeploy
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check service health
+        id: health_check
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://your-render-app.onrender.com/health)
+          if [ "$RESPONSE" != "200" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+        env:
+          URL: https://your-render-app.onrender.com/health
+
+      - name: Trigger redeploy on failure
+        if: steps.health_check.outputs.status == 'failure'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { data } = await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'render-deploy.yml',
+              ref: 'main'
+            });
+            console.log('Redeploy triggered');
+
+  redeploy:
+    needs: health-check
+    if: needs.health_check.outputs.status == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redeploy to Render
+        uses: render-actions/deploy@v1
+        with:
+          service-id: your-render-service-id
+          api-key: ${{ secrets.RENDER_API_KEY }}
