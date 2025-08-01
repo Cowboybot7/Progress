@@ -3,9 +3,6 @@ import json
 import os
 import re
 import logging
-import threading
-import asyncio
-from flask import Flask, request, Response
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -258,94 +255,51 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
 
 # ===== Create Telegram Application =====
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+def main():
+    # Create Application instance
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler("test", test_command))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("list", list_projects))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("update", update_start),
+            CallbackQueryHandler(update_start, pattern="cmd_update")
+        ],
+        states={
+            SELECT_PROJECT: [CallbackQueryHandler(select_project)],
+            INPUT_ACTUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_actual)],
+            INPUT_PLANNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_planned)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
+    )
+    application.add_handler(conv_handler)
+    
+    # Callback handlers
+    application.add_handler(CallbackQueryHandler(start, pattern="cmd_start"))
+    application.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
+    application.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
+    
+    # Start the bot with webhook
+    logger.info(f"Starting bot with webhook URL: {WEBHOOK_URL}")
+    logger.info(f"Using port: {PORT}")
+    
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
+        url_path=BOT_TOKEN,
+        cert=None,
+        key=None,
+        bootstrap_retries=0,
+        drop_pending_updates=False,
+    )
 
-# Add handlers
-telegram_app.add_handler(CommandHandler("test", test_command))
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("list", list_projects))
-telegram_app.add_handler(CommandHandler("help", help_command))
-
-# Conversation handler
-conv_handler = ConversationHandler(
-    entry_points=[
-        CommandHandler("update", update_start),
-        CallbackQueryHandler(update_start, pattern="cmd_update")
-    ],
-    states={
-        SELECT_PROJECT: [CallbackQueryHandler(select_project)],
-        INPUT_ACTUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_actual)],
-        INPUT_PLANNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_planned)]
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-    allow_reentry=True
-)
-telegram_app.add_handler(conv_handler)
-
-# Callback handlers
-telegram_app.add_handler(CallbackQueryHandler(start, pattern="cmd_start"))
-telegram_app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
-telegram_app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
-
-# ===== Flask Setup =====
-app = Flask(__name__)
-
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def telegram_webhook():
-    try:
-        update_data = request.json
-        logger.info(f"Received update: {update_data}")
-        update = Update.de_json(update_data, telegram_app.bot)
-        asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update), 
-            telegram_app.update_queue.loop
-        )
-        return Response(status=200)
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return Response(status=500)
-
-@app.route('/wakeup', methods=['GET'])
-def wakeup():
-    return '🚀 Bot is awake and running!', 200
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return '✅ Bot is healthy', 200
-
-@app.route('/test_sheets', methods=['GET'])
-def test_sheets():
-    try:
-        sheet = init_gsheet()
-        first_cell = sheet.cell(1, 1).value
-        return f"Google Sheets access OK! First cell: {first_cell}", 200
-    except Exception as e:
-        return f"Google Sheets error: {str(e)}", 500
-
-# ===== Startup Function =====
-def run_bot():
-    logger.info("Starting Telegram bot background process")
-    try:
-        # Set webhook
-        success = telegram_app.bot.set_webhook(WEBHOOK_URL)
-        if success:
-            logger.info(f"Webhook set successfully: {WEBHOOK_URL}")
-        else:
-            logger.error("Failed to set webhook")
-        
-        # Start processing updates
-        telegram_app.run_polling()
-    except Exception as e:
-        logger.error(f"Bot crashed: {str(e)}")
-
-# ===== Main Execution =====
 if __name__ == "__main__":
-    logger.info(f"Starting application on port {PORT}")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}")
-    
-    # Start bot in background thread
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # Start Flask app
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    main()
