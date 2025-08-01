@@ -2,7 +2,7 @@ import gspread
 import json
 import os
 import re
-import signal
+import logging
 import threading
 import asyncio
 from flask import Flask, request, Response
@@ -19,6 +19,13 @@ from telegram.ext import (
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
+# ===== Setup Logging =====
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 # ===== Configuration =====
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
@@ -28,20 +35,33 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 CREDS_JSON = json.loads(os.environ['GOOGLE_CREDS_JSON'])
-PORT = int(os.environ.get("PORT", 10000))  # Get port from Render environment
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").rstrip('/') + f"/{BOT_TOKEN}"
+
+# Validate webhook URL
+if not re.match(r'^https?://[^\s/$.?#].[^\s]*$', WEBHOOK_URL):
+    logger.error(f"Invalid webhook URL: {WEBHOOK_URL}")
+    raise ValueError("Invalid webhook URL format")
 
 # Conversation states
 SELECT_PROJECT, INPUT_ACTUAL, INPUT_PLANNED = range(3)
 
-# Initialize Google Sheets API
+# ===== Initialize Google Sheets API =====
 def init_gsheet():
-    creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    return sheet
+    try:
+        logger.info("Initializing Google Sheets connection")
+        creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+        logger.info("Google Sheets connection successful")
+        return sheet
+    except Exception as e:
+        logger.error(f"Google Sheets initialization failed: {str(e)}")
+        raise
 
 # ===== Bot Handlers =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Start command from {update.effective_user.id}")
     keyboard = [
         [InlineKeyboardButton("/start", callback_data="cmd_start")],
         [InlineKeyboardButton("/update", callback_data="cmd_update")],
@@ -53,14 +73,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🏗️ Project Progress Tracker Bot\n\nChoose a command:"
     
     if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        await query.edit_message_text(text, reply_markup=reply_markup)
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(text, reply_markup=reply_markup)
 
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Simple test command to verify bot functionality"""
+    logger.info(f"Test command from {update.effective_user.id}")
+    await update.message.reply_text("✅ Bot is working and responding!")
+
 async def list_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        logger.info("Listing projects")
         sheet = init_gsheet()
         data = sheet.get_all_records()
         
@@ -81,18 +106,17 @@ async def list_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 update_date = 'N/A'
             
-            # Use emoji coloring instead of HTML styling
+            # Use emoji coloring for status
             delay_ahead = project.get('Delay/Ahead', 'N/A')
             try:
-                # Extract numeric value from string (e.g., "-15 days" -> -15)
                 da_value = float(''.join(filter(str.isdigit, delay_ahead)))
                 if "-" in delay_ahead:
                     da_value = -da_value
                 
                 if da_value < 0:
-                    delay_ahead_display = f'🔴 <b>{delay_ahead}</b>'  # Red circle for negative
+                    delay_ahead_display = f'🔴 <b>{delay_ahead}</b>'
                 else:
-                    delay_ahead_display = f'🟢 <b>{delay_ahead}</b>'  # Green circle for positive
+                    delay_ahead_display = f'🟢 <b>{delay_ahead}</b>'
             except (ValueError, TypeError):
                 delay_ahead_display = f'<b>{delay_ahead}</b>'
             
@@ -108,22 +132,28 @@ async def list_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.edit_message_text(response, parse_mode="HTML", disable_web_page_preview=True)
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                response, 
+                parse_mode="HTML", 
+                disable_web_page_preview=True
+            )
         else:
-            await update.message.reply_text(response, parse_mode="HTML", disable_web_page_preview=True)
+            await update.message.reply_text(
+                response, 
+                parse_mode="HTML", 
+                disable_web_page_preview=True
+            )
     except Exception as e:
         error_msg = f"❌ Error fetching data: {str(e)}"
-        if update.callback_query:
-            await update.callback_query.message.reply_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
+        logger.error(error_msg)
+        await update.message.reply_text(error_msg)
 
 async def update_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        logger.info("Starting update process")
         sheet = init_gsheet()
-        projects = sheet.col_values(2)[1:]  # Project names from column B
+        projects = sheet.col_values(2)[1:]
         
         keyboard = []
         for idx, name in enumerate(projects, 1):
@@ -132,26 +162,29 @@ async def update_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.edit_message_text("🔧 Select project to update:", reply_markup=reply_markup)
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                "🔧 Select project to update:", 
+                reply_markup=reply_markup
+            )
         else:
-            await update.message.reply_text("🔧 Select project to update:", reply_markup=reply_markup)
+            await update.message.reply_text(
+                "🔧 Select project to update:", 
+                reply_markup=reply_markup
+            )
         
         return SELECT_PROJECT
     except Exception as e:
         error_msg = f"❌ Error: {str(e)}"
-        if update.callback_query:
-            await update.callback_query.message.reply_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
+        logger.error(error_msg)
+        await update.message.reply_text(error_msg)
         return ConversationHandler.END
 
 async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    context.user_data['project_row'] = int(query.data) + 1  # +1 for header row
+    context.user_data['project_row'] = int(query.data) + 1
     await query.edit_message_text("Enter new ACTUAL progress (0% - 100%):")
     return INPUT_ACTUAL
 
@@ -160,7 +193,7 @@ async def input_actual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = float(update.message.text)
         if not 0 <= value <= 100:
             raise ValueError
-        context.user_data['actual'] = value / 100.0  # Convert percentage to decimal
+        context.user_data['actual'] = value / 100.0
         await update.message.reply_text("Enter new PLANNED progress (0% - 100%):")
         return INPUT_PLANNED
     except ValueError:
@@ -175,11 +208,11 @@ async def input_planned(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         sheet = init_gsheet()
         row = context.user_data['project_row']
-        planned_decimal = value / 100.0  # Convert percentage to decimal
+        planned_decimal = value / 100.0
         
-        sheet.update_cell(row, 9, context.user_data['actual'])  # Actual (I)
-        sheet.update_cell(row, 10, planned_decimal)  # Planned (J)
-        sheet.update_cell(row, 18, f"=NOW()")  # Update timestamp (R)
+        sheet.update_cell(row, 9, context.user_data['actual'])
+        sheet.update_cell(row, 10, planned_decimal)
+        sheet.update_cell(row, 18, f"=NOW()")
         
         project_name = sheet.cell(row, 2).value
         
@@ -189,12 +222,15 @@ async def input_planned(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"- New Planned: {value:.1f}%",
             parse_mode="HTML"
         )
+        logger.info(f"Updated project: {project_name}")
         return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("❌ Invalid value! Must be number between 0 and 100\nTry again:")
         return INPUT_PLANNED
     except Exception as e:
-        await update.message.reply_text(f"❌ Update failed: {str(e)}")
+        error_msg = f"❌ Update failed: {str(e)}"
+        logger.error(error_msg)
+        await update.message.reply_text(error_msg)
         return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,7 +242,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Bot Guide:\n\n"
         "/start - Initialize the bot\n"
         "/list - Show all project statuses\n"
-        "/update - Modify progress values\n\n"
+        "/update - Modify progress values\n"
+        "/test - Test if bot is working\n\n"
         "When updating:\n"
         "1. Select a project\n"
         "2. Enter ACTUAL progress (0%-100%)\n"
@@ -215,19 +252,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        await query.edit_message_text(text)
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text)
     else:
         await update.message.reply_text(text)
 
-# ===== Flask Setup =====
-app = Flask(__name__)
-
-# Create Telegram Application
+# ===== Create Telegram Application =====
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# Add handlers to Telegram application
+# Add handlers
+telegram_app.add_handler(CommandHandler("test", test_command))
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("list", list_projects))
+telegram_app.add_handler(CommandHandler("help", help_command))
+
+# Conversation handler
 conv_handler = ConversationHandler(
     entry_points=[
         CommandHandler("update", update_start),
@@ -241,91 +280,72 @@ conv_handler = ConversationHandler(
     fallbacks=[CommandHandler("cancel", cancel)],
     allow_reentry=True
 )
-
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("list", list_projects))
-telegram_app.add_handler(CommandHandler("help", help_command))
 telegram_app.add_handler(conv_handler)
+
+# Callback handlers
 telegram_app.add_handler(CallbackQueryHandler(start, pattern="cmd_start"))
 telegram_app.add_handler(CallbackQueryHandler(list_projects, pattern="cmd_list"))
 telegram_app.add_handler(CallbackQueryHandler(help_command, pattern="cmd_help"))
 
-# Webhook routes
+# ===== Flask Setup =====
+app = Flask(__name__)
+
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
-    # Process update in a separate thread
-    threading.Thread(target=process_update, args=(request.json,)).start()
-    return Response(status=200)
-
-def process_update(update_data):
-    """Process update in a synchronous context"""
-    print(f"Processing update: {update_data.get('update_id')}")
-    update = Update.de_json(update_data, telegram_app.bot)
-    telegram_app.update_queue.put_nowait(update)
+    try:
+        update_data = request.json
+        logger.info(f"Received update: {update_data}")
+        update = Update.de_json(update_data, telegram_app.bot)
+        asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update), 
+            telegram_app.update_queue.loop
+        )
+        return Response(status=200)
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return Response(status=500)
 
 @app.route('/wakeup', methods=['GET'])
 def wakeup():
     return '🚀 Bot is awake and running!', 200
 
-# Health check endpoint
 @app.route('/health', methods=['GET'])
 def health_check():
     return '✅ Bot is healthy', 200
 
-# Start the Telegram bot in a background thread
+@app.route('/test_sheets', methods=['GET'])
+def test_sheets():
+    try:
+        sheet = init_gsheet()
+        first_cell = sheet.cell(1, 1).value
+        return f"Google Sheets access OK! First cell: {first_cell}", 200
+    except Exception as e:
+        return f"Google Sheets error: {str(e)}", 500
+
+# ===== Startup Function =====
 def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    webhook_base = os.environ.get("WEBHOOK_URL")
-    
-    if not webhook_base:
-        raise RuntimeError("WEBHOOK_URL environment variable not set")
-    
-    webhook_base = webhook_base.rstrip('/')
-    webhook_url = f"{webhook_base}/{BOT_TOKEN}"
-    
-    # Validate URL format
-    if not re.match(r'^https?://[^\s/$.?#].[^\s]*$', webhook_url):
-        raise ValueError(f"Invalid webhook URL: {webhook_url}")
-    
-    print(f"Starting bot with webhook URL: {webhook_url}")
-    print(f"Using port: {PORT}")
-    
-    # Initialize and start the bot
-    loop.run_until_complete(telegram_app.initialize())
-    loop.run_until_complete(telegram_app.start())
-    
-    # Set webhook
-    success = loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
-    if success:
-        print("✅ Webhook set successfully")
-    else:
-        print("⚠️ Failed to set webhook!")
-    
-    # Run until stopped
-    loop.run_forever()
+    logger.info("Starting Telegram bot background process")
+    try:
+        # Set webhook
+        success = telegram_app.bot.set_webhook(WEBHOOK_URL)
+        if success:
+            logger.info(f"Webhook set successfully: {WEBHOOK_URL}")
+        else:
+            logger.error("Failed to set webhook")
+        
+        # Start processing updates
+        telegram_app.run_polling()
+    except Exception as e:
+        logger.error(f"Bot crashed: {str(e)}")
 
-# Start the bot thread
-bot_thread = threading.Thread(target=run_bot, daemon=True)
-bot_thread.start()
-
-# Shutdown handler
-def shutdown_handler(signum, frame):
-    print("🛑 Shutting down bot...")
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(telegram_app.stop())
-    loop.run_until_complete(telegram_app.shutdown())
-    print("Bot shutdown complete")
-    exit(0)
-
-# Main entry point
+# ===== Main Execution =====
 if __name__ == "__main__":
-    # Register signal handlers
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+    logger.info(f"Starting application on port {PORT}")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
     
-    # Start Flask app on the correct port
-    print(f"Starting Flask app on port {PORT}")
+    # Start bot in background thread
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Start Flask app
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
